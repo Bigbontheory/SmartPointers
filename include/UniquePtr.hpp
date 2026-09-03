@@ -4,8 +4,18 @@ template<typename T>
 class UniquePtr {
 private:
     T* ptr;
+
+    template <typename U>
+    friend class UniquePtr;
+
+
 public:
-    explicit UniquePtr(T* ptr_) : ptr(ptr_) {}
+    explicit UniquePtr(T* ptr_ = nullptr) : ptr(ptr_) {}
+
+    template <typename U>
+    UniquePtr(UniquePtr<U>&& other) noexcept : ptr(other.ptr) {
+        other.ptr = nullptr;
+    }
 
     UniquePtr(const UniquePtr<T>& other) = delete;
     UniquePtr<T>& operator=(const UniquePtr<T> & other) = delete;
@@ -13,6 +23,7 @@ public:
     UniquePtr(UniquePtr<T>&& other) noexcept : ptr(other.ptr) {
         other.ptr = nullptr;
     }
+
     UniquePtr<T>& operator=(UniquePtr<T>&& other) noexcept {
         if(this != &other) {
             delete ptr;
@@ -28,7 +39,7 @@ public:
 
     T* get() const {return ptr;}
     T* operator->() const {return ptr;}
-    T& operator*() const {return ptr;}
+    T& operator*() const {return *ptr;}
 
     T* release() {
         T* old_ptr = ptr;
@@ -41,5 +52,10 @@ public:
         ptr = new_ptr;
         delete old_ptr;
     }
+
+    explicit operator bool() const{
+        return ptr!= nullptr;
+    }
+
 };
 

@@ -272,3 +272,4 @@ TEST(SharedPtrMemoryLeaks, PolymorphicDestruction) {
     EXPECT_EQ(DerivedLeakTracker::derived_alive_count, 0);
     EXPECT_EQ(LeakTracker::alive_count, 0);
 }
+
