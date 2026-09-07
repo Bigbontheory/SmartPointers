@@ -11,25 +11,27 @@ FetchContent_Declare(
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG        v1.14.0
 )
+# Предотвращает конфликты CRT на Windows/MSVC
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 
-# 2. Создание исполняемого файла (СТРОГО ДО target_include_directories)
+# 2. Создание исполняемого файла
 add_executable(SmartPointers
         tests/SharedPtr_tests.cpp
         tests/UniquePtr_tests.cpp
 )
 
-# 3. Пути к заголовкам
+# 3. Пути к заголовкам проекта
 target_include_directories(SmartPointers PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/LAB2
 )
 
-# 4. Линковка Google Test с готовым main()
+# 4. Линковка Google Test (линкуем обе цели для надежности)
 target_link_libraries(SmartPointers PRIVATE
+        GTest::gtest
         GTest::gtest_main
 )
 
