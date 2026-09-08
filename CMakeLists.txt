@@ -23,6 +23,8 @@ add_executable(SmartPointers
         tests/UniquePtr_tests.cpp
 )
 
+
+
 # 3. Пути к заголовкам проекта
 target_include_directories(SmartPointers PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

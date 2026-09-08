@@ -221,7 +221,6 @@ TEST(SharedPtrSubtyping, PolymorphicMoveTest) {
     EXPECT_EQ(base->get_first(), 777);
 }
 
-
 TEST(SharedPtrMemoryLeaks, LifetimeAndScopeDestruction) {
     LeakTracker::alive_count = 0;
 
@@ -273,3 +272,133 @@ TEST(SharedPtrMemoryLeaks, PolymorphicDestruction) {
     EXPECT_EQ(LeakTracker::alive_count, 0);
 }
 
+void delete_leak_tracker_array(void* p) {
+    delete[] static_cast<LeakTracker*>(p);
+}
+
+void delete_derived_leak_tracker_array(void* p) {
+    delete[] static_cast<DerivedLeakTracker*>(p);
+}
+
+TEST(SharedPtrDeleterTests, ArrayDestructionCount) {
+    LeakTracker::alive_count = 0;
+
+    {
+        SharedPtr<LeakTracker> sp_array(new LeakTracker[5], delete_leak_tracker_array);
+        EXPECT_EQ(LeakTracker::alive_count, 5);
+        EXPECT_EQ(sp_array.get_count(), 1);
+    }
+
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+}
+
+TEST(SharedPtrDeleterTests, SetDeleterViaMethod) {
+    LeakTracker::alive_count = 0;
+
+    {
+        SharedPtr<LeakTracker> sp(new LeakTracker[4]);
+        EXPECT_EQ(LeakTracker::alive_count, 4);
+
+        sp.deleter(delete_leak_tracker_array);
+    }
+
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+}
+
+TEST(SharedPtrDeleterTests, SharedOwnershipWithDeleter) {
+    LeakTracker::alive_count = 0;
+
+    {
+        SharedPtr<LeakTracker> sp1(new LeakTracker[3], delete_leak_tracker_array);
+        EXPECT_EQ(LeakTracker::alive_count, 3);
+        EXPECT_EQ(sp1.get_count(), 1);
+
+        {
+            SharedPtr<LeakTracker> sp2 = sp1;
+            EXPECT_EQ(sp1.get_count(), 2);
+            EXPECT_EQ(sp2.get_count(), 2);
+            EXPECT_EQ(LeakTracker::alive_count, 3);
+        }
+
+        EXPECT_EQ(sp1.get_count(), 1);
+        EXPECT_EQ(LeakTracker::alive_count, 3);
+    }
+
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+}
+
+TEST(SharedPtrDeleterTests, DeleterVisibleAcrossCopies) {
+    LeakTracker::alive_count = 0;
+
+    {
+        SharedPtr<LeakTracker> sp1(new LeakTracker[3]);
+        SharedPtr<LeakTracker> sp2 = sp1;
+
+        sp1.deleter(delete_leak_tracker_array);
+
+        sp1.reset();
+        EXPECT_EQ(LeakTracker::alive_count, 3);
+        EXPECT_EQ(sp2.get_count(), 1);
+    }
+
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+}
+
+TEST(SharedPtrDeleterTests, MoveTransfersDeleter) {
+    LeakTracker::alive_count = 0;
+
+    {
+        SharedPtr<LeakTracker> sp1(new LeakTracker[4], delete_leak_tracker_array);
+
+        SharedPtr<LeakTracker> sp2 = std::move(sp1);
+
+        EXPECT_EQ(sp1.get(), nullptr);
+        EXPECT_EQ(sp1.get_count(), 0);
+        EXPECT_NE(sp2.get(), nullptr);
+        EXPECT_EQ(sp2.get_count(), 1);
+        EXPECT_EQ(LeakTracker::alive_count, 4);
+    }
+
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+}
+
+TEST(SharedPtrDeleterTests, PolymorphicMoveTransfersDeleter) {
+    LeakTracker::alive_count = 0;
+    DerivedLeakTracker::derived_alive_count = 0;
+
+    {
+        SharedPtr<DerivedLeakTracker> derived(new DerivedLeakTracker[3], delete_derived_leak_tracker_array);
+        EXPECT_EQ(LeakTracker::alive_count, 3);
+        EXPECT_EQ(DerivedLeakTracker::derived_alive_count, 3);
+
+        SharedPtr<LeakTracker> base = std::move(derived);
+
+        EXPECT_EQ(derived.get(), nullptr);
+        EXPECT_EQ(derived.get_count(), 0);
+        EXPECT_NE(base.get(), nullptr);
+        EXPECT_EQ(base.get_count(), 1);
+    }
+
+    EXPECT_EQ(DerivedLeakTracker::derived_alive_count, 0);
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+}
+
+TEST(SharedPtrDeleterTests, ResetWithCustomDeleter) {
+    LeakTracker::alive_count = 0;
+
+    SharedPtr<LeakTracker> sp(new LeakTracker[2], delete_leak_tracker_array);
+    EXPECT_EQ(LeakTracker::alive_count, 2);
+
+    sp.reset();
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+    EXPECT_EQ(sp.get(), nullptr);
+    EXPECT_EQ(sp.get_count(), 0);
+
+    sp.reset(new LeakTracker[5], delete_leak_tracker_array);
+    EXPECT_EQ(LeakTracker::alive_count, 5);
+    EXPECT_EQ(sp.get_count(), 1);
+
+    sp.reset();
+    EXPECT_EQ(LeakTracker::alive_count, 0);
+    EXPECT_EQ(sp.get_count(), 0);
+}

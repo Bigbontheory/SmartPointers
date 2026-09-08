@@ -162,15 +162,19 @@ TEST(UniquePtrMemoryLeaks, PolymorphicDestruction) {
     EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
 }
 
+void delete_unique_leak_tracker_array(void* p) {
+    delete[] static_cast<UniqueLeakTracker*>(p);
+}
+
+void delete_derived_unique_leak_tracker_array(void* p) {
+    delete[] static_cast<DerivedUniqueLeakTracker*>(p);
+}
+
 TEST(UniquePtrDeleterTests, ArrayDestructionCount) {
     UniqueLeakTracker::alive_count = 0;
 
     {
-        auto array_deleter = [](void* p) {
-            delete[] static_cast<UniqueLeakTracker*>(p);
-        };
-
-        UniquePtr<UniqueLeakTracker> uptr_array(new UniqueLeakTracker[5], array_deleter);
+        UniquePtr<UniqueLeakTracker> uptr_array(new UniqueLeakTracker[5], delete_unique_leak_tracker_array);
         EXPECT_EQ(UniqueLeakTracker::alive_count, 5);
     }
 
@@ -184,9 +188,7 @@ TEST(UniquePtrDeleterTests, SetDeleterViaMethod) {
         UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[3]);
         EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
 
-        uptr.deleter([](void* p) {
-            delete[] static_cast<UniqueLeakTracker*>(p);
-        });
+        uptr.deleter(delete_unique_leak_tracker_array);
     }
 
     EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
@@ -196,9 +198,7 @@ TEST(UniquePtrDeleterTests, MoveTransfersDeleter) {
     UniqueLeakTracker::alive_count = 0;
 
     {
-        UniquePtr<UniqueLeakTracker> uptr1(new UniqueLeakTracker[4], [](void* p) {
-            delete[] static_cast<UniqueLeakTracker*>(p);
-        });
+        UniquePtr<UniqueLeakTracker> uptr1(new UniqueLeakTracker[4], delete_unique_leak_tracker_array);
         EXPECT_EQ(UniqueLeakTracker::alive_count, 4);
 
         UniquePtr<UniqueLeakTracker> uptr2 = std::move(uptr1);
@@ -216,11 +216,7 @@ TEST(UniquePtrDeleterTests, PolymorphicMoveTransfersDeleter) {
     DerivedUniqueLeakTracker::derived_alive_count = 0;
 
     {
-        auto derived_array_deleter = [](void* p) {
-            delete[] static_cast<DerivedUniqueLeakTracker*>(p);
-        };
-
-        UniquePtr<DerivedUniqueLeakTracker> derived(new DerivedUniqueLeakTracker[3], derived_array_deleter);
+        UniquePtr<DerivedUniqueLeakTracker> derived(new DerivedUniqueLeakTracker[3], delete_derived_unique_leak_tracker_array);
         EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
         EXPECT_EQ(DerivedUniqueLeakTracker::derived_alive_count, 3);
 
@@ -237,9 +233,7 @@ TEST(UniquePtrDeleterTests, PolymorphicMoveTransfersDeleter) {
 TEST(UniquePtrDeleterTests, ResetWithCustomDeleter) {
     UniqueLeakTracker::alive_count = 0;
 
-    UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[2], [](void* p) {
-        delete[] static_cast<UniqueLeakTracker*>(p);
-    });
+    UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[2], delete_unique_leak_tracker_array);
     EXPECT_EQ(UniqueLeakTracker::alive_count, 2);
 
     uptr.reset();
@@ -253,9 +247,7 @@ TEST(UniquePtrDeleterTests, ReleaseDoesNotInvokeDeleter) {
     UniqueLeakTracker* raw_array = nullptr;
 
     {
-        UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[3], [](void* p) {
-            delete[] static_cast<UniqueLeakTracker*>(p);
-        });
+        UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[3], delete_unique_leak_tracker_array);
         EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
 
         raw_array = uptr.release();
