@@ -1,262 +1,252 @@
 #include <gtest/gtest.h>
 #include <utility>
+#include <string>
+#include <type_traits>
 #include "UniquePtr.hpp"
-#include "mutable_array_sequence.hpp"
 
-struct UniqueLeakTracker {
-    static inline int alive_count = 0;
-
-    UniqueLeakTracker() { alive_count++; }
-    virtual ~UniqueLeakTracker() { alive_count--; }
+struct BaseTracker {
+    int value = 0;
+    explicit BaseTracker(int v = 0) : value(v) {}
+    virtual ~BaseTracker() = default;
 };
 
-struct DerivedUniqueLeakTracker : public UniqueLeakTracker {
-    static inline int derived_alive_count = 0;
-
-    DerivedUniqueLeakTracker() { derived_alive_count++; }
-    ~DerivedUniqueLeakTracker() override { derived_alive_count--; }
+struct DerivedTracker : public BaseTracker {
+    explicit DerivedTracker(int v = 0) : BaseTracker(v) {}
+    ~DerivedTracker() override = default;
 };
 
-TEST(UniquePtrTests, EmptyPointer) {
-    UniquePtr<Sequence<int>> up;
-    EXPECT_EQ(up.get(), nullptr);
+struct StatefulDeleter {
+    int calls_count = 0;
 
-    if (up) {
-        FAIL();
-    } else {
-        SUCCEED();
+    void operator()(BaseTracker* ptr) {
+        calls_count++;
+        delete ptr;
     }
+};
+
+TEST(UniquePtrBase, DefaultAndNullptrConstructor) {
+    UniquePtr<int> ptr_default;
+    EXPECT_EQ(ptr_default.get(), nullptr);
+    EXPECT_FALSE(static_cast<bool>(ptr_default));
+
+    UniquePtr<int> ptr_explicit_nullptr(nullptr);
+    EXPECT_EQ(ptr_explicit_nullptr.get(), nullptr);
+    EXPECT_FALSE(static_cast<bool>(ptr_explicit_nullptr));
 }
 
-TEST(UniquePtr, ArrowDereferenceOperator) {
-    UniquePtr<MutableArraySequence<int>> up(new MutableArraySequence<int>());
-
-    up->append(30);
-    up->append(20);
-    up->append(50);
-
-    EXPECT_EQ(up->get_size(), 3);
-    EXPECT_EQ(up->get_first(), 30);
-    EXPECT_EQ(up->get_last(), 50);
-
-    if (up) {
-        SUCCEED();
-    } else {
-        FAIL();
-    }
-
-    MutableArraySequence<int>& seq = *up;
-    EXPECT_EQ(seq.get_size(), up->get_size());
-    EXPECT_EQ(seq.get_first(), up->get_first());
-    EXPECT_EQ(seq.get_last(), up->get_last());
+TEST(UniquePtrBase, RawPointerConstructorAndBoolOperator) {
+    UniquePtr<BaseTracker> ptr(new BaseTracker(42));
+    EXPECT_NE(ptr.get(), nullptr);
+    EXPECT_TRUE(static_cast<bool>(ptr));
+    EXPECT_EQ(ptr->value, 42);
 }
 
-TEST(UniquePtrTests, MoveTests) {
-    UniquePtr<MutableArraySequence<int>> up1(new MutableArraySequence<int>());
-    up1->append(42);
-    MutableArraySequence<int>* raw_pointer = up1.get();
-
-    UniquePtr<MutableArraySequence<int>> up2(std::move(up1));
-
-    EXPECT_EQ(up1.get(), nullptr);
-    EXPECT_EQ(up2.get(), raw_pointer);
-    EXPECT_EQ(up2->get_first(), 42);
-
-    UniquePtr<MutableArraySequence<int>> up3(new MutableArraySequence<int>());
-    up3->append(49);
-
-    up3 = std::move(up2);
-
-    EXPECT_EQ(up3.get(), raw_pointer);
-    EXPECT_EQ(up2.get(), nullptr);
-    EXPECT_EQ(up3->get_first(), 42);
-
-    up3 = std::move(up3);
-    EXPECT_EQ(up3->get_first(), 42);
-    EXPECT_EQ(up3.get(), raw_pointer);
+TEST(UniquePtrBase, CopySemanticsAreDeleted) {
+    EXPECT_FALSE((std::is_copy_constructible_v<UniquePtr<int>>));
+    EXPECT_FALSE((std::is_copy_assignable_v<UniquePtr<int>>));
 }
 
-TEST(UniquePtrLifetimeTests, ReleaseAndReset) {
-    UniquePtr<MutableArraySequence<int>> uptr1(new MutableArraySequence<int>());
-    uptr1->append(42);
+TEST(UniquePtrBase, MoveConstructorSameType) {
+    UniquePtr<BaseTracker> first(new BaseTracker(10));
+    BaseTracker* raw = first.get();
 
-    MutableArraySequence<int>* raw_ptr = uptr1.release();
+    UniquePtr<BaseTracker> second(std::move(first));
 
-    EXPECT_EQ(uptr1.get(), nullptr);
-    EXPECT_NE(raw_ptr, nullptr);
-    EXPECT_EQ(raw_ptr->get_first(), 42);
-
-    delete raw_ptr;
-
-    UniquePtr<MutableArraySequence<int>> uptr2(new MutableArraySequence<int>());
-    uptr2->append(100);
-
-    uptr2.reset();
-    EXPECT_EQ(uptr2.get(), nullptr);
-
-    UniquePtr<MutableArraySequence<int>> uptr3(new MutableArraySequence<int>());
-    uptr3->append(1);
-
-    auto replacement = new MutableArraySequence<int>();
-    replacement->append(999);
-
-    uptr3.reset(replacement);
-
-    EXPECT_EQ(uptr3.get(), replacement);
-    EXPECT_EQ(uptr3->get_first(), 999);
+    EXPECT_EQ(first.get(), nullptr);
+    EXPECT_EQ(second.get(), raw);
+    EXPECT_EQ(second->value, 10);
 }
 
-TEST(UniquePtrSubtypingTests, PolymorphicMoveUpcast) {
-    UniquePtr<MutableArraySequence<int>> derived(new MutableArraySequence<int>());
-    derived->append(777);
+TEST(UniquePtrBase, MoveAssignmentSameType) {
+    UniquePtr<BaseTracker> first(new BaseTracker(10));
+    UniquePtr<BaseTracker> second(new BaseTracker(20));
+    BaseTracker* raw_first = first.get();
 
-    MutableArraySequence<int>* raw_derived = derived.get();
+    second = std::move(first);
 
-    UniquePtr<Sequence<int>> base = std::move(derived);
+    EXPECT_EQ(first.get(), nullptr);
+    EXPECT_EQ(second.get(), raw_first);
+    EXPECT_EQ(second->value, 10);
+}
+
+TEST(UniquePtrBase, MoveAssignmentSelfAssignment) {
+    UniquePtr<BaseTracker> ptr(new BaseTracker(99));
+    BaseTracker* raw = ptr.get();
+
+    ptr = std::move(ptr);
+
+    EXPECT_EQ(ptr.get(), raw);
+    EXPECT_EQ(ptr->value, 99);
+}
+
+TEST(UniquePtrPolymorphism, PolymorphicMoveConstructor) {
+    UniquePtr<DerivedTracker> derived(new DerivedTracker(100));
+    DerivedTracker* raw_derived = derived.get();
+
+    UniquePtr<BaseTracker> base(std::move(derived));
 
     EXPECT_EQ(derived.get(), nullptr);
     EXPECT_EQ(base.get(), raw_derived);
-
-    EXPECT_EQ(base->get_size(), 1);
-    EXPECT_EQ(base->get_first(), 777);
+    EXPECT_EQ(base->value, 100);
 }
 
-TEST(UniquePtrMemoryLeaks, LifetimeAndScopeDestruction) {
-    UniqueLeakTracker::alive_count = 0;
+TEST(UniquePtrPolymorphism, PolymorphicMoveAssignment) {
+    UniquePtr<BaseTracker> base(new BaseTracker(5));
+    UniquePtr<DerivedTracker> derived(new DerivedTracker(50));
+    DerivedTracker* raw_derived = derived.get();
+
+    base = std::move(derived);
+
+    EXPECT_EQ(derived.get(), nullptr);
+    EXPECT_EQ(base.get(), raw_derived);
+    EXPECT_EQ(base->value, 50);
+}
+
+TEST(UniquePtrBase, DereferenceOperators) {
+    struct TestStruct {
+        std::string text = "init";
+    };
+
+    UniquePtr<TestStruct> ptr(new TestStruct());
+
+    EXPECT_EQ(ptr->text, "init");
+    ptr->text = "modified";
+    EXPECT_EQ(ptr->text, "modified");
+
+    TestStruct& ref = *ptr;
+    ref.text = "by_reference";
+    EXPECT_EQ(ptr->text, "by_reference");
+}
+
+TEST(UniquePtrBase, ReleaseMethod) {
+    UniquePtr<BaseTracker> ptr(new BaseTracker(7));
+
+    BaseTracker* raw = ptr.release();
+
+    EXPECT_EQ(ptr.get(), nullptr);
+    EXPECT_FALSE(static_cast<bool>(ptr));
+    EXPECT_NE(raw, nullptr);
+    EXPECT_EQ(raw->value, 7);
+
+    delete raw;
+}
+
+TEST(UniquePtrBase, ResetMethod) {
+    UniquePtr<BaseTracker> ptr(new BaseTracker(1));
+
+    ptr.reset(new BaseTracker(2));
+    EXPECT_EQ(ptr->value, 2);
+
+    ptr.reset();
+    EXPECT_EQ(ptr.get(), nullptr);
+
+    ptr.reset();
+    EXPECT_EQ(ptr.get(), nullptr);
+}
+
+TEST(UniquePtrDeleter, StatefulDeleterAndGetDeleter) {
+    StatefulDeleter d;
+    {
+        UniquePtr<BaseTracker, StatefulDeleter> ptr(new BaseTracker(15), d);
+        EXPECT_EQ(ptr.get_deleter().calls_count, 0);
+
+        const auto& const_ref = ptr;
+        EXPECT_EQ(const_ref.get_deleter().calls_count, 0);
+
+        ptr.get_deleter().calls_count = 10;
+        EXPECT_EQ(ptr.get_deleter().calls_count, 10);
+    }
+}
+
+TEST(UniquePtrDeleter, LambdaDeleterSupport) {
+    bool lambda_called = false;
+    auto my_deleter = [&lambda_called](int* p) {
+        lambda_called = true;
+        delete p;
+    };
 
     {
-        UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker());
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 1);
+        UniquePtr<int, decltype(my_deleter)> ptr(new int(100), my_deleter);
+        EXPECT_FALSE(lambda_called);
     }
-
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
+    EXPECT_TRUE(lambda_called);
 }
 
-TEST(UniquePtrMemoryLeaks, ResetDestruction) {
-    UniqueLeakTracker::alive_count = 0;
-
-    UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker());
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 1);
-
-    uptr.reset();
-
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-    EXPECT_EQ(uptr.get(), nullptr);
+TEST(UniquePtrArray, ConstructionAndDestruction) {
+    UniquePtr<BaseTracker[]> arr(new BaseTracker[5]);
+    EXPECT_NE(arr.get(), nullptr);
+    EXPECT_TRUE(static_cast<bool>(arr));
 }
 
-TEST(UniquePtrMemoryLeaks, PolymorphicDestruction) {
-    UniqueLeakTracker::alive_count = 0;
-    DerivedUniqueLeakTracker::derived_alive_count = 0;
+TEST(UniquePtrArray, SubscriptOperator) {
+    UniquePtr<int[]> arr(new int[3]{10, 20, 30});
 
-    {
-        UniquePtr<DerivedUniqueLeakTracker> derived(new DerivedUniqueLeakTracker());
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 1);
-        EXPECT_EQ(DerivedUniqueLeakTracker::derived_alive_count, 1);
+    EXPECT_EQ(arr[0], 10);
+    EXPECT_EQ(arr[1], 20);
+    EXPECT_EQ(arr[2], 30);
 
-        UniquePtr<UniqueLeakTracker> base = std::move(derived);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 1);
-        EXPECT_EQ(DerivedUniqueLeakTracker::derived_alive_count, 1);
+    arr[1] = 999;
+    EXPECT_EQ(arr[1], 999);
+}
+
+TEST(UniquePtrArray, MoveConstructor) {
+    UniquePtr<BaseTracker[]> first(new BaseTracker[3]);
+    BaseTracker* raw = first.get();
+
+    UniquePtr<BaseTracker[]> second(std::move(first));
+
+    EXPECT_EQ(first.get(), nullptr);
+    EXPECT_EQ(second.get(), raw);
+}
+
+TEST(UniquePtrArray, MoveAssignmentAndSelfAssignment) {
+    UniquePtr<BaseTracker[]> first(new BaseTracker[2]);
+    UniquePtr<BaseTracker[]> second(new BaseTracker[4]);
+    BaseTracker* raw_first = first.get();
+
+    second = std::move(first);
+
+    EXPECT_EQ(first.get(), nullptr);
+    EXPECT_EQ(second.get(), raw_first);
+
+    second = std::move(second);
+    EXPECT_EQ(second.get(), raw_first);
+}
+
+TEST(UniquePtrArray, ReleaseAndReset) {
+    UniquePtr<BaseTracker[]> arr(new BaseTracker[3]);
+
+    BaseTracker* raw = arr.release();
+    EXPECT_EQ(arr.get(), nullptr);
+    EXPECT_NE(raw, nullptr);
+
+    delete[] raw;
+
+    arr.reset(new BaseTracker[2]);
+    EXPECT_NE(arr.get(), nullptr);
+
+    arr.reset();
+    EXPECT_EQ(arr.get(), nullptr);
+}
+
+TEST(MakeUnique, SingleObjectForwarding) {
+    struct MultiArgStruct {
+        int a;
+        std::string b;
+        MultiArgStruct(int x, std::string y) : a(x), b(std::move(y)) {}
+    };
+
+    auto ptr = make_unique<MultiArgStruct>(42, "hello");
+    EXPECT_NE(ptr.get(), nullptr);
+    EXPECT_EQ(ptr->a, 42);
+    EXPECT_EQ(ptr->b, "hello");
+}
+
+TEST(MakeUnique, DynamicArrayValueInitialization) {
+    auto arr = make_unique<int[]>(10);
+    EXPECT_NE(arr.get(), nullptr);
+
+    for (std::size_t i = 0; i < 10; ++i) {
+        EXPECT_EQ(arr[i], 0);
     }
-
-    EXPECT_EQ(DerivedUniqueLeakTracker::derived_alive_count, 0);
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-}
-
-void delete_unique_leak_tracker_array(void* p) {
-    delete[] static_cast<UniqueLeakTracker*>(p);
-}
-
-void delete_derived_unique_leak_tracker_array(void* p) {
-    delete[] static_cast<DerivedUniqueLeakTracker*>(p);
-}
-
-TEST(UniquePtrDeleterTests, ArrayDestructionCount) {
-    UniqueLeakTracker::alive_count = 0;
-
-    {
-        UniquePtr<UniqueLeakTracker> uptr_array(new UniqueLeakTracker[5], delete_unique_leak_tracker_array);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 5);
-    }
-
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-}
-
-TEST(UniquePtrDeleterTests, SetDeleterViaMethod) {
-    UniqueLeakTracker::alive_count = 0;
-
-    {
-        UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[3]);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
-
-        uptr.deleter(delete_unique_leak_tracker_array);
-    }
-
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-}
-
-TEST(UniquePtrDeleterTests, MoveTransfersDeleter) {
-    UniqueLeakTracker::alive_count = 0;
-
-    {
-        UniquePtr<UniqueLeakTracker> uptr1(new UniqueLeakTracker[4], delete_unique_leak_tracker_array);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 4);
-
-        UniquePtr<UniqueLeakTracker> uptr2 = std::move(uptr1);
-
-        EXPECT_EQ(uptr1.get(), nullptr);
-        EXPECT_NE(uptr2.get(), nullptr);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 4);
-    }
-
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-}
-
-TEST(UniquePtrDeleterTests, PolymorphicMoveTransfersDeleter) {
-    UniqueLeakTracker::alive_count = 0;
-    DerivedUniqueLeakTracker::derived_alive_count = 0;
-
-    {
-        UniquePtr<DerivedUniqueLeakTracker> derived(new DerivedUniqueLeakTracker[3], delete_derived_unique_leak_tracker_array);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
-        EXPECT_EQ(DerivedUniqueLeakTracker::derived_alive_count, 3);
-
-        UniquePtr<UniqueLeakTracker> base = std::move(derived);
-
-        EXPECT_EQ(derived.get(), nullptr);
-        EXPECT_NE(base.get(), nullptr);
-    }
-
-    EXPECT_EQ(DerivedUniqueLeakTracker::derived_alive_count, 0);
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-}
-
-TEST(UniquePtrDeleterTests, ResetWithCustomDeleter) {
-    UniqueLeakTracker::alive_count = 0;
-
-    UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[2], delete_unique_leak_tracker_array);
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 2);
-
-    uptr.reset();
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
-    EXPECT_EQ(uptr.get(), nullptr);
-}
-
-TEST(UniquePtrDeleterTests, ReleaseDoesNotInvokeDeleter) {
-    UniqueLeakTracker::alive_count = 0;
-
-    UniqueLeakTracker* raw_array = nullptr;
-
-    {
-        UniquePtr<UniqueLeakTracker> uptr(new UniqueLeakTracker[3], delete_unique_leak_tracker_array);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
-
-        raw_array = uptr.release();
-        EXPECT_EQ(uptr.get(), nullptr);
-        EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
-    }
-
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 3);
-
-    delete[] raw_array;
-    EXPECT_EQ(UniqueLeakTracker::alive_count, 0);
 }

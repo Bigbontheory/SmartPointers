@@ -1,87 +1,106 @@
 #pragma once
+#include<utility>
+#include <type_traits>
 
 template<typename T>
+struct DefaultDelete {
+    constexpr DefaultDelete() noexcept = default;
+
+    template<typename U>
+    DefaultDelete(const DefaultDelete<U>&) noexcept {}
+
+    template<typename U>
+    DefaultDelete& operator=(const DefaultDelete<U>&) noexcept {
+        return *this;
+    }
+
+
+    void operator()(T* ptr) const {
+        delete ptr;
+    }
+};
+
+template<typename T, typename Deleter = DefaultDelete<T>>
 class UniquePtr {
 private:
-    T* ptr;
-    void(*deleter_func)(void*);
+    T* ptr = nullptr;
 
-    template <typename U>
+    Deleter deleter;
+
+    template <typename U, typename D>
     friend class UniquePtr;
 
-    void clean_up(T* p) {
-        if (p) {
-            if (deleter_func) {
-                deleter_func(p);
-            } else { delete p; }
-        }
-    }
-
-
 public:
-    explicit UniquePtr(T* ptr_ = nullptr, void (*del)(void*) = nullptr) :
-        ptr(ptr_), deleter_func(del)  {}
+    explicit UniquePtr(T* ptr_ = nullptr) :
+        ptr(ptr_), deleter(Deleter()) {}
 
-    void deleter(void (*del)(void*)) {
-        deleter_func = del;
-    }
+    UniquePtr(T* p, Deleter d) :
+        ptr(p), deleter(std::move(d)) {}
 
-    template <typename U>
-    UniquePtr(UniquePtr<U>&& other) noexcept : ptr(other.ptr), deleter_func(other.deleter_func) {
+    template <typename U, typename D>
+    UniquePtr(UniquePtr<U, D>&& other) noexcept : ptr(other.ptr), deleter(std::move(other.deleter)) {
         other.ptr = nullptr;
-        other.deleter_func = nullptr;
     }
 
-    template <typename U>
-    UniquePtr<T>& operator=(UniquePtr<U>&& other) noexcept {
-        clean_up(ptr);
+    template <typename U, typename D>
+    UniquePtr<T, Deleter>& operator=(UniquePtr<U, D>&& other) noexcept {
+        reset();
         ptr = other.ptr;
-        deleter_func = other.deleter_func;
-
+        deleter = std::move(other.deleter);
         other.ptr = nullptr;
-        other.deleter_func = nullptr;
         return *this;
     }
 
     UniquePtr(const UniquePtr<T>& other) = delete;
-    UniquePtr<T>& operator=(const UniquePtr<T> & other) = delete;
+    UniquePtr& operator=(const UniquePtr<T> & other) = delete;
 
-    UniquePtr(UniquePtr<T>&& other) noexcept : ptr(other.ptr), deleter_func(other.deleter_func)  {
+    template<typename U, typename D>
+    UniquePtr(const UniquePtr<U, D>& other) = delete;
+
+    template<typename U, typename D>
+    UniquePtr& operator=(const UniquePtr<U, D>& other) = delete;
+
+    UniquePtr(UniquePtr<T>&& other) noexcept : ptr(other.ptr), deleter(std::move(other.deleter))  {
         other.ptr = nullptr;
-        other.deleter_func = nullptr;
     }
 
-    UniquePtr<T>& operator=(UniquePtr<T>&& other) noexcept {
+    UniquePtr& operator=(UniquePtr<T>&& other) noexcept {
         if(this != &other) {
-            clean_up(ptr);
+            reset();
             ptr = other.ptr;
-            deleter_func = other.deleter_func;
-
             other.ptr = nullptr;
-            other.deleter_func = nullptr;
+            deleter = std::move(other.deleter);
         }
         return *this;
     }
 
+
     ~UniquePtr() {
-        clean_up(ptr);
+        if (ptr) {
+            deleter(ptr);
+        }
     }
 
-    T* get() const {return ptr;}
-    T* operator->() const {return ptr;}
-    T& operator*() const {return *ptr;}
+    Deleter& get_deleter() {return deleter;}
+    const Deleter& get_deleter() const {return deleter;}
+
+    T* get() const { return ptr; }
+    T* operator->() const { return ptr; }
+    T& operator*() const { return *ptr; }
+
 
     T* release() {
         T* old_ptr = ptr;
         ptr = nullptr;
-        deleter_func = nullptr;
         return old_ptr;
     }
 
     void reset(T* new_ptr = nullptr) {
         T* old_ptr = ptr;
         ptr = new_ptr;
-        clean_up(old_ptr);
+        if  (old_ptr) {
+            deleter(old_ptr);
+        };
     }
 
     explicit operator bool() const{
@@ -89,4 +108,77 @@ public:
     }
 
 };
+
+template <typename T, typename... Args>
+std::enable_if_t<!std::is_array_v<T>, UniquePtr<T>>
+make_unique(Args&&... args) {
+    return UniquePtr<T>(new T(std::forward<Args>(args)...));
+}
+
+
+template<typename T>
+struct DefaultDelete<T[]> {
+    void operator()(T* ptr) const {
+        delete[] ptr;
+    }
+};
+
+template<typename T>
+class UniquePtr<T[], DefaultDelete<T[]>> {
+private:
+    T* ptr = nullptr;
+public:
+    explicit UniquePtr(T* p = nullptr) : ptr(p) {}
+
+    ~UniquePtr() {
+        delete[] ptr;
+    }
+
+    UniquePtr(const UniquePtr& other) = delete;
+    UniquePtr& operator=(const UniquePtr&) = delete;
+
+    UniquePtr(UniquePtr&& other) noexcept: ptr(other.ptr) {
+        other.ptr = nullptr;
+    }
+
+    UniquePtr& operator=(UniquePtr&& other) noexcept {
+        if (this != &other) {
+            delete[] ptr;
+            ptr = other.ptr;
+            other.ptr = nullptr;
+        }
+        return *this;
+    }
+
+    T& operator[](std::size_t index) const {
+        return ptr[index];
+    }
+
+    T* get() const noexcept {
+        return ptr;
+    }
+
+    explicit operator bool() const {
+        return ptr != nullptr;
+    }
+
+    T* release() {
+        T* old_ptr = ptr;
+        ptr = nullptr;
+        return old_ptr;
+    }
+
+    void reset(T* new_ptr = nullptr) {
+        T* old_ptr = ptr;
+        ptr = new_ptr;
+        delete[] old_ptr;
+    }
+};
+
+template <typename T>
+std::enable_if_t<std::is_unbounded_array_v<T>, UniquePtr<T>>
+make_unique(std::size_t size) {
+    using ElementType = std::remove_extent_t<T>;
+    return UniquePtr<T>(new ElementType[size]());
+}
 
