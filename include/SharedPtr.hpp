@@ -1,149 +1,309 @@
 #pragma once
+#include <cstddef>
+#include <utility>
 
-namespace detail {
-    struct ControlBlock {
-        int count = 1;
-        void (*deleter_func)(void*) = nullptr;
-    };
-}
+
+template<typename T>
+struct DefaultDelete {
+    void operator()(T* ptr) const {
+        delete ptr;
+    }
+};
+
+struct ControlBlockBase {
+    size_t ref_count = 1;
+
+    virtual ~ControlBlockBase() = default;
+
+    void add_ref() noexcept {
+        ++ref_count;
+    }
+
+    void release_ref() noexcept {
+        if (--ref_count == 0) {
+            destroy_and_free();
+        }
+    }
+
+protected:
+    virtual void destroy_and_free() noexcept = 0;
+};
+
+template <typename Ptr, typename Deleter>
+struct ControlBlockPtr final : ControlBlockBase {
+    Ptr ptr;
+    Deleter deleter;
+
+    ControlBlockPtr(Ptr p, Deleter d)
+        : ptr(p), deleter(std::move(d)) {}
+
+protected:
+    void destroy_and_free() noexcept override {
+        deleter(ptr);
+        delete this;
+    }
+};
+
+template <typename T>
+struct ControlBlockArray final : ControlBlockBase {
+    T* ptr;
+
+    explicit ControlBlockArray(T* p) : ptr(p) {}
+
+protected:
+    void destroy_and_free() noexcept override {
+        delete[] ptr;
+        delete this;
+    }
+};
+
+
 
 template<typename T>
 class SharedPtr {
 private:
-    T* ptr;
-    detail::ControlBlock* cb;
-
+    T* ptr_ = nullptr;
+    ControlBlockBase* cb_ = nullptr;
     template <typename U>
     friend class SharedPtr;
 
-    void increment_count() {
-        if (cb) {
-            ++(cb->count);
+public:
+    SharedPtr() = default;
+
+    explicit SharedPtr(T* p)
+        : SharedPtr(p, DefaultDelete<T>{}) {}
+
+    template <typename Deleter>
+    SharedPtr (T* p, Deleter d)
+        : ptr_(p) {
+        if  (p) {
+            cb_ = new ControlBlockPtr<T*, Deleter>(p, std::move(d));
         }
     }
 
-    void decrement_count() {
-        if (cb) {
-            (cb->count)--;
-            if (cb->count == 0) {
-                if (ptr)
-                {
-                    if (cb->deleter_func) {
-                        cb->deleter_func(ptr);
-                    } else {
-                        delete ptr;
-                    }
-                }
-                delete cb;
-                cb = nullptr;
-                ptr = nullptr;
+    template <typename U>
+    SharedPtr(const SharedPtr<U>& other) noexcept
+        : ptr_(other.ptr_), cb_(other.cb_) {
+        if (cb_) {
+            cb_->add_ref();
+        }
+    }
+
+    template <typename U>
+    SharedPtr(SharedPtr<U>&& other) noexcept
+        : ptr_(other.ptr_), cb_(other.cb_) {
+        other.ptr_ = nullptr;
+        other.cb_ = nullptr;
+    }
+
+    template <typename U>
+    SharedPtr& operator=(const SharedPtr<U>& other) noexcept {
+        if (this->cb_ != other.cb_) {
+            if (cb_) {
+                cb_->release_ref();
+            }
+            ptr_ = other.ptr_;
+            cb_ = other.cb_;
+            if (cb_) {
+                cb_->add_ref();
             }
         }
+        return *this;
     }
 
-public:
-    explicit SharedPtr(T* ptr_ = nullptr, void (*del)(void*) = nullptr): ptr(ptr_), cb(nullptr) {
-        if (ptr) {
-            cb = new detail::ControlBlock{1, del};
+    template <typename U>
+    SharedPtr& operator=(SharedPtr<U>&& other) noexcept {
+        if (this->cb_ != other.cb_) {
+            if (cb_) {
+                cb_->release_ref();
+            }
+            ptr_ = other.ptr_;
+            cb_ = other.cb_;
+            other.ptr_ = nullptr;
+            other.cb_ = nullptr;
+        }
+        return *this;
+    }
+
+
+    ~SharedPtr() {
+        if (cb_) {
+            cb_->release_ref();
         }
     }
 
-    void deleter(void (*del)(void*)) {
-        if (cb) {
-            cb->deleter_func = del;
+    SharedPtr(const SharedPtr& other) :
+        ptr_(other.ptr_), cb_(other.cb_) {
+        if (cb_) {
+            cb_->add_ref();
         }
     }
 
-    SharedPtr(const SharedPtr<T>& other) :
-        ptr(other.ptr), cb(other.cb)  {
-        increment_count();
-    }
 
-    SharedPtr<T>& operator=(const SharedPtr<T>& other) {
+    SharedPtr& operator=(const SharedPtr& other) {
         if (this != &other) {
-            decrement_count();
-            ptr = other.ptr;
-            cb = other.cb;
-            increment_count();
+            if (cb_) {
+                cb_->release_ref();
+            }
+
+            ptr_ = other.ptr_;
+            cb_ = other.cb_;
+
+            if (cb_) {
+                cb_->add_ref();
+            }
         }
         return *this;
     }
 
-    template <typename U>
-    SharedPtr(const SharedPtr<U>& other)
-        : ptr(other.ptr), cb(other.cb) {
-        increment_count();
+    SharedPtr(SharedPtr&& other) noexcept
+        : ptr_(other.ptr_), cb_(other.cb_) {
+        other.ptr_ = nullptr;
+        other.cb_ = nullptr;
     }
 
-    template <typename U>
-    SharedPtr(SharedPtr<U>&& other) noexcept : ptr(other.ptr), cb(other.cb) {
-        other.ptr = nullptr;
-        other.cb= nullptr;
-    }
+    SharedPtr& operator=(SharedPtr&& other) noexcept {
+        if (this != &other) {
+            if (cb_) {
+                cb_->release_ref();
+            }
 
-    template <typename U>
-    SharedPtr<T>& operator=(SharedPtr<U>&& other) noexcept {
-        decrement_count();
-        ptr = other.ptr;
-        cb = other.cb;
-        other.ptr = nullptr;
-        other.cb = nullptr;
-        return *this;
-    }
+            ptr_ = other.ptr_;
+            cb_ = other.cb_;
 
-    SharedPtr(SharedPtr<T>&& other) noexcept : ptr(other.ptr), cb(other.cb) {
-        other.ptr = nullptr;
-        other.cb= nullptr;
-    }
-
-    SharedPtr<T>& operator=(SharedPtr<T>&& other) noexcept {
-        if(this != &other) {
-            decrement_count();
-            ptr = other.ptr;
-            cb = other.cb;
-            other.ptr = nullptr;
-            other.cb = nullptr;
+            other.ptr_ = nullptr;
+            other.cb_ = nullptr;
         }
         return *this;
+    }
+    void reset() noexcept {
+        if (cb_) {
+            cb_->release_ref();
+            cb_ = nullptr;
+        }
+        ptr_ = nullptr;
+    }
+
+
+    template <typename Y>
+    void reset(Y* p) {
+        reset(p, DefaultDelete<Y>{});
+    }
+
+    template <typename Y, typename Deleter>
+    void reset(Y* p, Deleter d) {
+
+        if (cb_) {
+            cb_->release_ref();
+            cb_ = nullptr;
+        }
+        ptr_ = p;
+        if (p) {
+            cb_ = new ControlBlockPtr<Y*, Deleter>(p, std::move(d));
+        }
+    }
+
+    T* get() const noexcept { return ptr_; }
+    T& operator*() const noexcept { return *ptr_; }
+    T* operator->() const noexcept { return ptr_; }
+
+    std::size_t use_count() const noexcept {
+        return cb_ ? cb_->ref_count : 0;
+    }
+
+    explicit operator bool() const noexcept {
+        return ptr_ != nullptr;
+    }
+
+};
+
+template<typename T>
+class SharedPtr<T[]> {
+private:
+    template<typename U>
+    friend class SharedPtr;
+
+    T* ptr_ = nullptr;
+    ControlBlockBase* cb_ = nullptr;
+public:
+    SharedPtr() = default;
+
+    explicit SharedPtr(T* p) : ptr_(p) {
+        if (p) {
+            cb_ = new ControlBlockArray<T>(p);
+        }
     }
 
     ~SharedPtr() {
-        decrement_count();
-    }
-
-    void reset(T* ptr_ = nullptr, void (*del)(void*) = nullptr) {
-        if (ptr != ptr_) {
-            decrement_count();
-            ptr = ptr_;
-            if (ptr_ != nullptr) {
-                cb = new detail::ControlBlock{1, del};
-            }
-            else {
-                cb = nullptr;
-            }
+        if (cb_) {
+            cb_->release_ref();
         }
     }
 
-    T* get() const {return ptr;}
-    T& operator*() const {return *ptr;}
-    T* operator->() const {return ptr;}
-
-    int get_count() const {
-        if (cb == nullptr) {
-            return 0;
-        } else { return cb->count; }
+    SharedPtr(const SharedPtr& other)
+        : ptr_(other.ptr_), cb_(other.cb_) {
+        if (cb_) {
+            cb_->add_ref();
+        }
     }
 
-    bool operator==(const SharedPtr<T>& other) const {
-        return (ptr == other.ptr);
+    SharedPtr& operator=(const SharedPtr& other)  {
+        if (this != &other) {
+            if (cb_) {
+                cb_->release_ref();
+            }
+            ptr_ = other.ptr_;
+            cb_ = other.cb_;
+            if (cb_) {
+                cb_->add_ref();
+            }
+        }
+        return *this;
     }
 
-    bool operator!=(const SharedPtr<T>& other) const {
-        return (!(ptr == other.ptr));
+    SharedPtr(SharedPtr&& other) noexcept
+        : ptr_(other.ptr_), cb_(other.cb_) {
+        other.ptr_ = nullptr;
+        other.cb_ = nullptr;
     }
 
-    explicit operator bool() const {
-        return ptr != nullptr;
+    SharedPtr& operator=(SharedPtr&& other) noexcept {
+        if (this != &other) {
+            if (cb_) {
+                cb_->release_ref();
+            }
+            ptr_ = other.ptr_;
+            cb_ = other.cb_;
+            other.ptr_ = nullptr;
+            other.cb_ = nullptr;
+        }
+        return *this;
     }
 
+    void reset() noexcept {
+        if (cb_) {
+            cb_->release_ref();
+            cb_ = nullptr;
+        }
+        ptr_ = nullptr;
+    }
+
+    void reset(T* p) {
+        if (cb_) {
+            cb_->release_ref();
+            cb_ = nullptr;
+        }
+        ptr_ = p;
+        if (p) {
+            cb_ = new ControlBlockArray<T>(p);
+        }
+    }
+
+    T& operator[] (size_t index) const {
+        return ptr_[index];
+    }
+
+    T* get() const noexcept { return ptr_; }
+    size_t use_count() const noexcept { return cb_ ? cb_->ref_count : 0; }
+    explicit operator bool() const noexcept { return ptr_ != nullptr; }
 };
